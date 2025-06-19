@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import re
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.preprocessing import LabelEncoder
 
@@ -120,31 +121,7 @@ def anova_test(df, cat_col, num_col):
     return f_stat, p_val
 
 
-def cramers_v(x, y):
-    """
-    Calculate Cramér's V statistic for association between two categorical variables.
-    Berechnet den Cramér's V-Koeffizienten für den Zusammenhang zweier kategorialer Variablen.
 
-    Parameters:
-    x (pd.Series): First categorical variable / Erste kategoriale Variable
-    y (pd.Series): Second categorical variable / Zweite kategoriale Variable
-
-    Returns:
-    float: Cramér's V value between 0 and 1 / Cramér's V-Wert zwischen 0 und 1
-    """
-    confusion_matrix = pd.crosstab(x, y)
-    chi2 = chi2_contingency(confusion_matrix)[0]
-    n = confusion_matrix.sum().sum()
-    phi2 = chi2 / n
-    r, k = confusion_matrix.shape
-    cramers_v_value = np.sqrt(phi2 / min(k - 1, r - 1))
-
-    # Print result / Ergebnis ausgeben
-    print("Cramér's V Result:")
-    print("Ergebnis von Cramér's V:")
-    print(f"Cramér's V: {cramers_v_value:.4f}")
-
-    return cramers_v_value
 
 def calculate_mutual_info_regression(df, target_column):
     """
@@ -247,6 +224,66 @@ def clean_numeric_column(df, column_name, output_type="float"):
 
     return df
 
+def extract_avg_fuel_consumption(df, column_name="Verbrauch"):
+    """
+    Extrahiert Verbrauchswerte (kombiniert, innerorts, außerorts) aus einer Textspalte,
+    erstellt daraus separate Spalten sowie eine Durchschnittsspalte und entfernt die Originalspalte.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Das Eingabe-DataFrame mit Verbrauchsangaben als Text.
+
+    column_name : str, optional (default="Verbrauch")
+        Der Name der Spalte, die verarbeitet werden soll.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        Kopie des DataFrames mit neuen Spalten:
+        - 'kombiniert'
+        - 'innerorts'
+        - 'außerorts'
+        - 'Verbrauch_avg'
+        und ohne die Originalspalte.
+    """
+
+    df = df.copy()
+
+    def parse_verbrauch(value):
+        try:
+            if pd.isna(value):
+                return None, None, None
+
+            # Entfernen störender Zeichen
+            value = str(value)
+            value = value.replace('\u2009', '').replace('\u2248', '').replace('*', '')
+
+            # Verbrauchswerte extrahieren
+            kombiniert = re.search(r'([\d,]+)\s*l/100km\s*\(kombiniert\)', value)
+            innerorts = re.search(r'([\d,]+)\s*l/100km\s*\(innerorts\)', value)
+            ausserorts = re.search(r'([\d,]+)\s*l/100km\s*\(außerorts\)', value)
+
+            # Umwandlung zu Float
+            kombiniert = float(kombiniert.group(1).replace(',', '.')) if kombiniert else None
+            innerorts = float(innerorts.group(1).replace(',', '.')) if innerorts else None
+            ausserorts = float(ausserorts.group(1).replace(',', '.')) if ausserorts else None
+
+            return kombiniert, innerorts, ausserorts
+        except Exception:
+            return None, None, None
+
+    # Verbrauchswerte extrahieren
+    df[['kombiniert', 'innerorts', 'außerorts']] = df[column_name].apply(parse_verbrauch).apply(pd.Series)
+
+    # Durchschnitt berechnen (nur wenn Werte vorhanden sind)
+    df["Verbrauch_avg"] = df[['kombiniert', 'innerorts', 'außerorts']].mean(axis=1)
+
+    # Originalspalte entfernen
+    df.drop(columns=[column_name], inplace=True)
+
+    return df
+
 def preprocess_dataframe(df):
     """
     Führt alle Vorverarbeitungsschritte auf dem gegebenen DataFrame aus.
@@ -282,7 +319,10 @@ def preprocess_dataframe(df):
     df = fill_categorical_by_group(df, ["Erstzulassung", "model"], "colour", "missing")
     df = fill_categorical_by_group(df, ["Erstzulassung", "model", "Kategorie"], "Airbags", "missing")
     df = fill_categorical_by_group(df, ["Erstzulassung", "model"], "Innenausstattung", "missing")
-    df = prep.fill_categorical_by_group(df, ["Erstzulassung", "model", "Hubraum"], "Verbrauch", "missing")
+    df = fill_categorical_by_group(df, ["Erstzulassung", "model", "Hubraum"], "Verbrauch", "missing")
+    #df = extract_avg_fuel_consumption(df, "Verbrauch")
+
+
 
     # 🇩🇪 Einzelne fehlende Werte mit Standardwert füllen
     # 🇬🇧 Fill missing values in specific columns with default value
@@ -290,12 +330,13 @@ def preprocess_dataframe(df):
 
     # 🇩🇪 Text-basierte Zahlen wie "6.208 cm³" bereinigen → float
     # 🇬🇧 Clean text-based numeric columns like "6.208 cm³" → float
-    df = clean_numeric_column(df, "Hubraum", output_type="float")
-    df = clean_numeric_column(df, "CO2-Emissionen", output_type="float")
+    #df = clean_numeric_column(df, "Hubraum", output_type="float")
+    #df = clean_numeric_column(df, "CO2-Emissionen", output_type="float")
 
     # 🇩🇪 Falls nach Bereinigung noch Lücken existieren → füllen nach Leistung & Modell
     # 🇬🇧 Fill any remaining missing values using [year, model, power] group
     df = fill_categorical_by_group(df, ["Erstzulassung", "model", "Leistung"], "Hubraum", "missing")
     df = fill_categorical_by_group(df, ["Erstzulassung", "model", "Leistung"], "CO2-Emissionen", "missing")
 
+    df = df[df['price'] <= 200000]
     return df
